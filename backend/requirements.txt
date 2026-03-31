@@ -3,3 +3,4 @@ uvicorn[standard]==0.30.6
 pymongo==4.8.0
 dnspython==2.6.1
 python-dotenv==1.0.1
+certifi==2024.8.30

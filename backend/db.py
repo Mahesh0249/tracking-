@@ -1,5 +1,6 @@
 import os
 
+import certifi
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
@@ -7,7 +8,13 @@ load_dotenv()
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 
-client = MongoClient(MONGO_URI)
+mongo_kwargs = {"serverSelectionTimeoutMS": 20000}
+
+# Atlas SRV connections rely on TLS; use certifi CA bundle for stable handshakes.
+if MONGO_URI.startswith("mongodb+srv://"):
+	mongo_kwargs["tlsCAFile"] = certifi.where()
+
+client = MongoClient(MONGO_URI, **mongo_kwargs)
 db = client["tracker"]
 entries_collection = db["entries"]
 users_collection = db["users"]
