@@ -48,15 +48,11 @@ export async function parsePlan(rawText) {
   return response.json();
 }
 
-export async function generatePlan(durationDays, focusAreas, dailyHours) {
+export async function generatePlan() {
   const response = await fetch(`${BASE_URL}/generate-plan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      duration_days: Number(durationDays) || 120,
-      focus_areas: focusAreas,
-      daily_hours: Number(dailyHours) || 3,
-    }),
+    body: JSON.stringify({}),
   });
 
   const data = await response.json();
