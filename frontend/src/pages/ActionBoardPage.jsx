@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { saveActionBoardProgress } from "../api";
+import { showToast } from "../utils/toast";
 
 function getCurrentPlanDay(meta, totalDays) {
   if (!meta?.loadedAt) return 1;
@@ -25,6 +27,13 @@ function normalizeTask(task, idx) {
 }
 
 export default function ActionBoardPage() {
+  const user = JSON.parse(localStorage.getItem("study-tracker-user") || "{}");
+  const userKey = user.email || "guest";
+  const planStorageKey = `study-tracker-parsed-plan-${userKey}`;
+  const statusStorageKey = `study-tracker-task-status-${userKey}`;
+  const metaStorageKey = `study-tracker-plan-meta-${userKey}`;
+  const notesStorageKey = `study-day-notes-${userKey}`;
+
   const [parsedPlan, setParsedPlan] = useState([]);
   const [taskStatus, setTaskStatus] = useState({});
   const [planMeta, setPlanMeta] = useState({});
@@ -32,34 +41,47 @@ export default function ActionBoardPage() {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    const savedPlan = JSON.parse(localStorage.getItem("study-tracker-parsed-plan") || "[]");
+    if (!localStorage.getItem(planStorageKey) && localStorage.getItem("study-tracker-parsed-plan")) {
+      localStorage.setItem(planStorageKey, localStorage.getItem("study-tracker-parsed-plan") || "[]");
+    }
+    if (!localStorage.getItem(statusStorageKey) && localStorage.getItem("study-tracker-task-status")) {
+      localStorage.setItem(statusStorageKey, localStorage.getItem("study-tracker-task-status") || "{}");
+    }
+    if (!localStorage.getItem(metaStorageKey) && localStorage.getItem("study-tracker-plan-meta")) {
+      localStorage.setItem(metaStorageKey, localStorage.getItem("study-tracker-plan-meta") || "{}");
+    }
+    if (!localStorage.getItem(notesStorageKey) && localStorage.getItem("study-day-notes")) {
+      localStorage.setItem(notesStorageKey, localStorage.getItem("study-day-notes") || "{}");
+    }
+
+    const savedPlan = JSON.parse(localStorage.getItem(planStorageKey) || "[]");
     const normalized = savedPlan.map((day) => ({
       ...day,
       tasks: (day.tasks || []).map((task, idx) => normalizeTask(task, idx + 1)),
     }));
     setParsedPlan(normalized);
-    setTaskStatus(JSON.parse(localStorage.getItem("study-tracker-task-status") || "{}"));
-    setPlanMeta(JSON.parse(localStorage.getItem("study-tracker-plan-meta") || "{}"));
+    setTaskStatus(JSON.parse(localStorage.getItem(statusStorageKey) || "{}"));
+    setPlanMeta(JSON.parse(localStorage.getItem(metaStorageKey) || "{}"));
     setHydrated(true);
-  }, []);
+  }, [metaStorageKey, planStorageKey, statusStorageKey]);
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem("study-tracker-task-status", JSON.stringify(taskStatus));
-  }, [taskStatus, hydrated]);
+    localStorage.setItem(statusStorageKey, JSON.stringify(taskStatus));
+  }, [taskStatus, hydrated, statusStorageKey]);
 
   const currentDay = getCurrentPlanDay(planMeta, parsedPlan.length);
 
   useEffect(() => {
-    const notesMap = JSON.parse(localStorage.getItem("study-day-notes") || "{}");
+    const notesMap = JSON.parse(localStorage.getItem(notesStorageKey) || "{}");
     setDayNotes(notesMap[currentDay] || "");
-  }, [currentDay]);
+  }, [currentDay, notesStorageKey]);
 
   function saveDayNote(value) {
     setDayNotes(value);
-    const notesMap = JSON.parse(localStorage.getItem("study-day-notes") || "{}");
+    const notesMap = JSON.parse(localStorage.getItem(notesStorageKey) || "{}");
     notesMap[currentDay] = value;
-    localStorage.setItem("study-day-notes", JSON.stringify(notesMap));
+    localStorage.setItem(notesStorageKey, JSON.stringify(notesMap));
   }
 
   function toggleTask(day, taskIndex) {
@@ -95,6 +117,25 @@ export default function ActionBoardPage() {
     return carry;
   }, [parsedPlan, currentDay, taskStatus]);
 
+  const todayCompletedDsaTasks = useMemo(() => {
+    return todaysTasks.filter((item) => {
+      const key = `${item.day}-${item.idx}`;
+      return Boolean(taskStatus[key]) && item.title.toLowerCase().startsWith("solve:");
+    }).length;
+  }, [todaysTasks, taskStatus]);
+
+  useEffect(() => {
+    if (!hydrated || parsedPlan.length === 0) return;
+
+    saveActionBoardProgress({
+      report_date: new Date().toISOString().slice(0, 10),
+      completed_tasks: doneCount,
+      completed_dsa_tasks: todayCompletedDsaTasks,
+    }).catch(() => {
+      // Keep local behavior even if sync fails.
+    });
+  }, [doneCount, hydrated, parsedPlan.length, todayCompletedDsaTasks]);
+
   function markAllTodayDone() {
     const updates = {};
     todaysTasks.forEach((task) => {
@@ -107,14 +148,15 @@ export default function ActionBoardPage() {
     const ok = window.confirm("Reset all task checkmarks for this active plan?");
     if (!ok) return;
     setTaskStatus({});
+    showToast("Task checkmarks reset");
   }
 
   function clearCurrentDayNote() {
     const ok = window.confirm("Clear note for this day?");
     if (!ok) return;
-    const notesMap = JSON.parse(localStorage.getItem("study-day-notes") || "{}");
+    const notesMap = JSON.parse(localStorage.getItem(notesStorageKey) || "{}");
     delete notesMap[currentDay];
-    localStorage.setItem("study-day-notes", JSON.stringify(notesMap));
+    localStorage.setItem(notesStorageKey, JSON.stringify(notesMap));
     setDayNotes("");
   }
 

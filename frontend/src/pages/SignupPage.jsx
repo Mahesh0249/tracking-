@@ -17,8 +17,8 @@ export default function SignupPage() {
       setLoading(true);
       setError("");
       await signup(name, email, password);
-      setMessage("Signup successful. Redirecting to login...");
-      setTimeout(() => navigate("/login"), 600);
+      setMessage("Signup successful.");
+      navigate("/login");
     } catch (err) {
       setError(err.message || "Signup failed");
     } finally {

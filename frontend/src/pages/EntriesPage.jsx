@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { deleteDailyReport, getDailyReports, getDsaStreak, getStreak } from "../api";
+import { useSearchParams } from "react-router-dom";
+import { deleteDailyReport, getDailyReports, getDsaStreak, getStreak, saveDailyReport } from "../api";
 import { showToast } from "../utils/toast";
 
 function getDateThreshold(range) {
@@ -39,12 +40,16 @@ function toCsv(rows) {
 }
 
 export default function EntriesPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [reports, setReports] = useState([]);
   const [streak, setStreak] = useState(0);
   const [dsaStreak, setDsaStreak] = useState(0);
   const [search, setSearch] = useState("");
   const [timeFilter, setTimeFilter] = useState("all");
   const [openNotesDate, setOpenNotesDate] = useState("");
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
+  const [composerDate, setComposerDate] = useState(new Date().toISOString().slice(0, 10));
+  const [composerText, setComposerText] = useState("");
   const [error, setError] = useState("");
 
   async function loadData() {
@@ -66,6 +71,14 @@ export default function EntriesPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    const shouldOpenComposer = searchParams.get("new") === "1";
+    if (shouldOpenComposer) {
+      setIsComposerOpen(true);
+      setOpenNotesDate("");
+    }
+  }, [searchParams]);
 
   const filteredReports = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -103,6 +116,52 @@ export default function EntriesPage() {
     }
   }
 
+  function openComposerForDate(dateValue = "") {
+    setComposerDate(dateValue || new Date().toISOString().slice(0, 10));
+    setComposerText("");
+    setIsComposerOpen(true);
+  }
+
+  function closeComposer() {
+    setIsComposerOpen(false);
+    setComposerText("");
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("new");
+    setSearchParams(nextParams, { replace: true });
+  }
+
+  async function handleSaveNote() {
+    if (!composerDate) {
+      setError("Please choose a date for this note");
+      return;
+    }
+
+    const existingReport = reports.find((report) => report.date === composerDate);
+    const payload = {
+      report_date: composerDate,
+      dsa_topic: existingReport?.dsa_topic || "",
+      dsa_problems_solved: existingReport?.dsa_problems_solved || 0,
+      study_hours: existingReport?.study_hours || 0,
+      oops_topic: existingReport?.oops_topic || "",
+      cn_topic: existingReport?.cn_topic || "",
+      other_topics: existingReport?.other_topics || "",
+      technologies_learned: existingReport?.technologies_learned || "",
+      mood: existingReport?.mood || "😐",
+      problems_learned_today: composerText.trim(),
+    };
+
+    try {
+      setError("");
+      await saveDailyReport(payload);
+      showToast(existingReport ? `Updated note for ${composerDate}` : `Saved note for ${composerDate}`);
+      closeComposer();
+      await loadData();
+      setOpenNotesDate(composerDate);
+    } catch (err) {
+      setError(err.message || "Failed to save note");
+    }
+  }
+
   function handleExport() {
     const csv = toCsv(filteredReports);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -126,8 +185,42 @@ export default function EntriesPage() {
             <h1>Progress Log</h1>
             <p className="helper">Readable, airy table with quick filtering and safe delete actions.</p>
           </div>
-          <button className="btn" type="button" onClick={handleExport}>Export CSV</button>
+          <div className="section-actions">
+            <button className="btn" type="button" onClick={() => openComposerForDate()}>New Note</button>
+            <button className="btn" type="button" onClick={handleExport}>Export CSV</button>
+          </div>
         </div>
+
+        {isComposerOpen ? (
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h2 style={{ marginTop: 0 }}>New Note</h2>
+            <div className="filters-grid">
+              <label>
+                <span>Date</span>
+                <input
+                  className="input"
+                  type="date"
+                  value={composerDate}
+                  onChange={(e) => setComposerDate(e.target.value)}
+                />
+              </label>
+            </div>
+            <label>
+              <span>Notes</span>
+              <textarea
+                className="textarea"
+                rows={5}
+                placeholder="Write what you learned today"
+                value={composerText}
+                onChange={(e) => setComposerText(e.target.value)}
+              />
+            </label>
+            <div className="actions-row" style={{ marginTop: 10 }}>
+              <button className="btn btn-primary" type="button" onClick={handleSaveNote}>Save Note</button>
+              <button className="btn" type="button" onClick={closeComposer}>Cancel</button>
+            </div>
+          </div>
+        ) : null}
 
         <input
           className="input"
@@ -198,6 +291,9 @@ export default function EntriesPage() {
               <button type="button" className="notes-toggle" onClick={() => setOpenNotesDate(isOpen ? "" : report.date)}>
                 {report.date} {isOpen ? "-" : "+"}
               </button>
+              <div className="actions-row" style={{ marginBottom: 8 }}>
+                <button className="btn" type="button" onClick={() => openComposerForDate(report.date)}>Edit Note</button>
+              </div>
               {isOpen ? <div className="notes-body"><p>{report.problems_learned_today || "No notes for this date."}</p></div> : null}
             </div>
           );

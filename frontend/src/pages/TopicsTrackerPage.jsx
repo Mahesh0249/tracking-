@@ -10,6 +10,7 @@ export default function TopicsTrackerPage() {
   const today = new Date().toISOString().slice(0, 10);
 
   const [form, setForm] = useState({
+    report_date: today,
     dsa_topic: DSA_TOPICS[0],
     dsa_problems_solved: 0,
     study_hours: 0,
@@ -40,6 +41,7 @@ export default function TopicsTrackerPage() {
         if (todayEntry) {
           setIsExistingToday(true);
           setForm({
+            report_date: todayEntry.date || today,
             dsa_topic: todayEntry.dsa_topic || DSA_TOPICS[0],
             dsa_problems_solved: todayEntry.dsa_problems_solved || 0,
             study_hours: todayEntry.study_hours || 0,
@@ -65,7 +67,7 @@ export default function TopicsTrackerPage() {
 
       if (user.email) {
         try {
-          const settings = await getProfileSettings(user.email);
+          const settings = await getProfileSettings();
           setDailyGoal(Number(settings.dsa_daily_goal) || 3);
           setDailyHourTarget(Number(settings.daily_target_hours) || 6);
         } catch {
@@ -88,6 +90,35 @@ export default function TopicsTrackerPage() {
     if (!draftHydrated) return;
     localStorage.setItem("study-notes-draft", form.problems_learned_today);
   }, [form.problems_learned_today, draftHydrated]);
+
+  useEffect(() => {
+    const selected = reports.find((entry) => entry.date === form.report_date);
+    if (!selected) {
+      setIsExistingToday(false);
+      setSelectedTech([]);
+      return;
+    }
+
+    setIsExistingToday(true);
+    setForm((prev) => ({
+      ...prev,
+      dsa_topic: selected.dsa_topic || DSA_TOPICS[0],
+      dsa_problems_solved: selected.dsa_problems_solved || 0,
+      study_hours: selected.study_hours || 0,
+      problems_learned_today: selected.problems_learned_today || "",
+      oops_topic: selected.oops_topic || OOPS_TOPICS[0],
+      cn_topic: selected.cn_topic || CN_TOPICS[0],
+      other_topics: selected.other_topics || "",
+      technologies_learned: selected.technologies_learned || "",
+      mood: selected.mood || "Steady",
+    }));
+
+    const fromEntry = (selected.technologies_learned || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    setSelectedTech(fromEntry);
+  }, [form.report_date, reports]);
 
   const dsaTopicCounts = useMemo(() => {
     const counts = {};
@@ -122,15 +153,17 @@ export default function TopicsTrackerPage() {
   }
 
   async function handleDeleteToday() {
-    const ok = window.confirm("Delete today's progress entry?");
+    const targetDate = form.report_date || today;
+    const ok = window.confirm(`Delete progress entry for ${targetDate}?`);
     if (!ok) return;
 
     try {
       setLoading(true);
       setError("");
-      await deleteDailyReport(today);
+      await deleteDailyReport(targetDate);
       setIsExistingToday(false);
       setForm({
+        report_date: today,
         dsa_topic: DSA_TOPICS[0],
         dsa_problems_solved: 0,
         study_hours: 0,
@@ -142,9 +175,9 @@ export default function TopicsTrackerPage() {
         mood: "Steady",
       });
       setSelectedTech([]);
-      setReports((prev) => prev.filter((item) => item.date !== today));
+      setReports((prev) => prev.filter((item) => item.date !== targetDate));
       localStorage.removeItem("study-notes-draft");
-      showToast("Today's progress deleted");
+      showToast(`Progress deleted for ${targetDate}`);
     } catch (err) {
       setError(err.message || "Could not delete today's progress.");
     } finally {
@@ -160,6 +193,7 @@ export default function TopicsTrackerPage() {
       setError("");
       const payload = {
         ...form,
+        report_date: form.report_date || today,
         dsa_problems_solved: Number(form.dsa_problems_solved) || 0,
         study_hours: Number(form.study_hours) || 0,
         technologies_learned: selectedTech.join(", "),
@@ -201,6 +235,15 @@ export default function TopicsTrackerPage() {
         <div className="card col-6">
           <h3>Primary Session</h3>
           <div className="grid">
+            <div className="col-4">
+              <label className="field-label">Report Date</label>
+              <input
+                className="input"
+                type="date"
+                value={form.report_date}
+                onChange={(e) => updateField("report_date", e.target.value)}
+              />
+            </div>
             <div className="col-8">
               <label className="field-label">DSA Topic</label>
               <select className="input" value={form.dsa_topic} onChange={(e) => updateField("dsa_topic", e.target.value)}>
@@ -314,7 +357,7 @@ export default function TopicsTrackerPage() {
 
         <div className="col-12 row-actions">
           <button className="btn btn-primary" type="submit" disabled={loading}>
-            {loading ? "Saving..." : isExistingToday ? "Update Today Progress" : "Save Today Progress"}
+            {loading ? "Saving..." : isExistingToday ? "Update Progress" : "Save Progress"}
           </button>
           {isExistingToday ? (
             <button className="btn btn-danger" type="button" onClick={handleDeleteToday} disabled={loading}>

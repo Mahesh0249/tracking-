@@ -17,9 +17,10 @@ export default function LoginPage() {
       setLoading(true);
       setError("");
       const data = await login(email, password);
+      localStorage.setItem("study-tracker-token", data.token || "");
       localStorage.setItem("study-tracker-user", JSON.stringify(data.user));
       setMessage("Login successful.");
-      setTimeout(() => navigate("/dashboard"), 500);
+      navigate("/dashboard");
     } catch (err) {
       setError(err.message || "Login failed");
     } finally {

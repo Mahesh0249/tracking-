@@ -1,176 +1,145 @@
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+function getAuthToken() {
+  return localStorage.getItem("study-tracker-token") || "";
+}
+
+async function apiFetch(path, options = {}) {
+  const token = getAuthToken();
+  const headers = {
+    ...(options.headers || {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  const response = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const detail = data?.detail || "Request failed";
+    const err = new Error(detail);
+    err.status = response.status;
+    throw err;
+  }
+
+  return data;
+}
+
 export async function addTopic(topic) {
-  const response = await fetch(`${BASE_URL}/add`, {
+  return apiFetch("/add", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topic }),
   });
-
-  if (!response.ok) {
-    throw new Error("Failed to add topic");
-  }
-
-  return response.json();
 }
 
 export async function getEntries() {
-  const response = await fetch(`${BASE_URL}/entries`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch entries");
-  }
-
-  return response.json();
+  return apiFetch("/entries");
 }
 
 export async function getStreak() {
-  const response = await fetch(`${BASE_URL}/streak`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch streak");
-  }
-
-  return response.json();
+  return apiFetch("/streak");
 }
 
 export async function parsePlan(rawText) {
-  const response = await fetch(`${BASE_URL}/parse-plan`, {
+  return apiFetch("/parse-plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: rawText }),
   });
-
-  if (!response.ok) {
-    throw new Error("Failed to parse plan");
-  }
-
-  return response.json();
 }
 
 export async function generatePlan() {
-  const response = await fetch(`${BASE_URL}/generate-plan`, {
+  return apiFetch("/generate-plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Failed to generate plan");
-  }
-
-  return data;
 }
 
 export async function signup(name, email, password) {
-  const response = await fetch(`${BASE_URL}/signup`, {
+  return apiFetch("/signup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, email, password }),
   });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Signup failed");
-  }
-
-  return data;
 }
 
 export async function login(email, password) {
-  const response = await fetch(`${BASE_URL}/login`, {
+  return apiFetch("/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
+}
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Login failed");
-  }
+export async function logout() {
+  return apiFetch("/logout", { method: "POST" });
+}
 
-  return data;
+export async function getCurrentUser() {
+  return apiFetch("/auth/me");
 }
 
 export async function saveDailyReport(payload) {
-  const response = await fetch(`${BASE_URL}/daily-report`, {
+  return apiFetch("/daily-report", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Failed to save daily report");
-  }
-
-  return data;
 }
 
 export async function getDailyReports() {
-  const response = await fetch(`${BASE_URL}/daily-reports`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch daily reports");
-  }
-
-  return response.json();
+  return apiFetch("/daily-reports");
 }
 
 export async function deleteDailyReport(dateValue) {
-  const response = await fetch(`${BASE_URL}/daily-report/${encodeURIComponent(dateValue)}`, {
+  return apiFetch(`/daily-report/${encodeURIComponent(dateValue)}`, {
     method: "DELETE",
   });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Failed to delete entry");
-  }
-  return data;
 }
 
 export async function getDsaStreak() {
-  const response = await fetch(`${BASE_URL}/dsa-streak`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch DSA streak");
-  }
-
-  return response.json();
+  return apiFetch("/dsa-streak");
 }
 
 export async function getProfileSummary() {
-  const response = await fetch(`${BASE_URL}/profile-summary`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch profile summary");
-  }
-
-  return response.json();
+  return apiFetch("/profile-summary");
 }
 
-export async function getProfileSettings(email) {
-  const response = await fetch(`${BASE_URL}/profile-settings?email=${encodeURIComponent(email)}`);
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.detail || "Failed to fetch profile settings");
-  }
-
-  return data;
+export async function getProfileSettings() {
+  return apiFetch("/profile-settings");
 }
 
 export async function saveProfileSettings(payload) {
-  const response = await fetch(`${BASE_URL}/profile-settings`, {
+  return apiFetch("/profile-settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Failed to save profile settings");
-  }
+}
 
-  return data;
+export async function saveActionBoardProgress(payload) {
+  return apiFetch("/action-board/progress", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getActionBoardProgress() {
+  return apiFetch("/action-board/progress");
+}
+
+export async function getAdminOverview() {
+  return apiFetch("/admin/overview");
 }

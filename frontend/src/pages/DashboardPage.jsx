@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { getDailyReports, getDsaStreak, getProfileSettings, getStreak } from "../api";
 import { ROADMAP_FOCUS } from "../constants/roadmap";
@@ -60,7 +59,7 @@ export default function DashboardPage() {
         setDsaStreak(dsaData.dsa_streak || 0);
 
         if (user.email) {
-          const data = await getProfileSettings(user.email);
+          const data = await getProfileSettings();
           setSettings(data);
         }
       } finally {
@@ -174,16 +173,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="card col-6 bento-card">
-        <h3>Quick Navigation</h3>
-        <div className="quick-links">
-          <Link className="btn btn-primary" to="/topics-tracker">Topics Tracker</Link>
-          <Link className="btn" to="/entries">Progress Log</Link>
-          <Link className="btn" to="/plan-studio">Plan Studio</Link>
-          <Link className="btn" to="/action-board">Action Board</Link>
-          <Link className="btn" to="/profile">Profile</Link>
-        </div>
-      </div>
     </div>
   );
 }

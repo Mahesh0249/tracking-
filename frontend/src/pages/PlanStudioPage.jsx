@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parsePlan } from "../api";
 import { showToast } from "../utils/toast";
 
@@ -203,20 +203,42 @@ function withTaskMeta(text, index) {
 }
 
 export default function PlanStudioPage() {
+  const user = JSON.parse(localStorage.getItem("study-tracker-user") || "{}");
+  const userKey = user.email || "guest";
+  const parsedPlanKey = `study-tracker-parsed-plan-${userKey}`;
+  const taskStatusKey = `study-tracker-task-status-${userKey}`;
+  const planMetaKey = `study-tracker-plan-meta-${userKey}`;
+  const savedPlansKey = `study-tracker-saved-plans-${userKey}`;
+
   const [planText, setPlanText] = useState("");
   const [previewPlan, setPreviewPlan] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [activePlan, setActivePlan] = useState(
-    JSON.parse(localStorage.getItem("study-tracker-parsed-plan") || "[]")
+    JSON.parse(localStorage.getItem(parsedPlanKey) || "[]")
   );
   const [activeMeta, setActiveMeta] = useState(
-    JSON.parse(localStorage.getItem("study-tracker-plan-meta") || "{}")
+    JSON.parse(localStorage.getItem(planMetaKey) || "{}")
   );
   const [savedPlans, setSavedPlans] = useState(
-    JSON.parse(localStorage.getItem("study-tracker-saved-plans") || "[]")
+    JSON.parse(localStorage.getItem(savedPlansKey) || "[]")
   );
+
+  useEffect(() => {
+    if (!localStorage.getItem(parsedPlanKey) && localStorage.getItem("study-tracker-parsed-plan")) {
+      localStorage.setItem(parsedPlanKey, localStorage.getItem("study-tracker-parsed-plan") || "[]");
+    }
+    if (!localStorage.getItem(taskStatusKey) && localStorage.getItem("study-tracker-task-status")) {
+      localStorage.setItem(taskStatusKey, localStorage.getItem("study-tracker-task-status") || "{}");
+    }
+    if (!localStorage.getItem(planMetaKey) && localStorage.getItem("study-tracker-plan-meta")) {
+      localStorage.setItem(planMetaKey, localStorage.getItem("study-tracker-plan-meta") || "{}");
+    }
+    if (!localStorage.getItem(savedPlansKey) && localStorage.getItem("study-tracker-saved-plans")) {
+      localStorage.setItem(savedPlansKey, localStorage.getItem("study-tracker-saved-plans") || "[]");
+    }
+  }, [parsedPlanKey, planMetaKey, savedPlansKey, taskStatusKey]);
 
   const previewTaskCount = useMemo(
     () => previewPlan.reduce((sum, day) => sum + (day.tasks?.length || 0), 0),
@@ -254,9 +276,9 @@ export default function PlanStudioPage() {
 
   function saveAsActive(plan) {
     const nextMeta = { totalDays: plan.length, loadedAt: new Date().toISOString().slice(0, 10) };
-    localStorage.setItem("study-tracker-parsed-plan", JSON.stringify(plan));
-    localStorage.setItem("study-tracker-task-status", JSON.stringify({}));
-    localStorage.setItem("study-tracker-plan-meta", JSON.stringify(nextMeta));
+    localStorage.setItem(parsedPlanKey, JSON.stringify(plan));
+    localStorage.setItem(taskStatusKey, JSON.stringify({}));
+    localStorage.setItem(planMetaKey, JSON.stringify(nextMeta));
     setActivePlan(plan);
     setActiveMeta(nextMeta);
   }
@@ -277,7 +299,7 @@ export default function PlanStudioPage() {
       ...savedPlans,
     ].slice(0, 10);
 
-    localStorage.setItem("study-tracker-saved-plans", JSON.stringify(nextSaved));
+    localStorage.setItem(savedPlansKey, JSON.stringify(nextSaved));
     setSavedPlans(nextSaved);
     showToast("Plan saved and activated");
   }
@@ -303,7 +325,7 @@ export default function PlanStudioPage() {
     if (!ok) return;
 
     const next = savedPlans.filter((item) => item.id !== planId);
-    localStorage.setItem("study-tracker-saved-plans", JSON.stringify(next));
+    localStorage.setItem(savedPlansKey, JSON.stringify(next));
     setSavedPlans(next);
     showToast("Saved plan deleted");
   }
@@ -312,11 +334,20 @@ export default function PlanStudioPage() {
     const ok = window.confirm("Clear active plan and reset progress?");
     if (!ok) return;
 
+    // Overwrite scoped keys so migration fallback cannot repopulate old data.
+    localStorage.setItem(parsedPlanKey, JSON.stringify([]));
+    localStorage.setItem(taskStatusKey, JSON.stringify({}));
+    localStorage.setItem(planMetaKey, JSON.stringify({}));
+
+    // Remove legacy global keys from older versions to avoid restoring cleared plans.
     localStorage.removeItem("study-tracker-parsed-plan");
     localStorage.removeItem("study-tracker-task-status");
     localStorage.removeItem("study-tracker-plan-meta");
+
     setActivePlan([]);
     setActiveMeta({});
+    setPreviewPlan([]);
+    setPlanText("");
     showToast("Active plan cleared");
   }
 

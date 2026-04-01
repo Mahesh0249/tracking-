@@ -3,22 +3,118 @@ import hashlib
 import json
 import os
 import re
+import secrets
 from typing import List
 from urllib import request as urllib_request
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 
 from db import (
+    action_board_progress_collection,
     daily_reports_collection,
     entries_collection,
     profile_settings_collection,
+    sessions_collection,
     users_collection,
 )
 
 router = APIRouter()
 
 DAY_HEADER_RE = re.compile(r"^day\s+(\d+)\s*:?$", re.IGNORECASE)
+TOKEN_TTL_DAYS = 14
+
+
+def _today_string() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _parse_iso_date(date_value: str) -> date:
+    return datetime.strptime(date_value, "%Y-%m-%d").date()
+
+
+def _normalize_report_date(date_value: str) -> str:
+    cleaned = (date_value or "").strip()
+    if not cleaned:
+        return _today_string()
+
+    try:
+        _parse_iso_date(cleaned)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Date must be in YYYY-MM-DD format") from exc
+
+    return cleaned
+
+
+def _create_session(email: str) -> str:
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(days=TOKEN_TTL_DAYS)
+    sessions_collection.insert_one(
+        {
+            "token": token,
+            "email": email,
+            "created_at": datetime.utcnow().isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+    )
+    return token
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    return parts[1].strip()
+
+
+def _require_user(authorization: str | None = Header(default=None)):
+    token = _extract_bearer_token(authorization)
+    session = sessions_collection.find_one({"token": token})
+    if not session:
+        raise HTTPException(status_code=401, detail="Session expired. Please login again")
+
+    expires_at = session.get("expires_at", "")
+    if expires_at:
+        try:
+            if datetime.fromisoformat(expires_at) <= datetime.utcnow():
+                sessions_collection.delete_one({"token": token})
+                raise HTTPException(status_code=401, detail="Session expired. Please login again")
+        except ValueError:
+            sessions_collection.delete_one({"token": token})
+            raise HTTPException(status_code=401, detail="Invalid session. Please login again")
+
+    email = session.get("email", "")
+    user = users_collection.find_one({"email": email}, {"password_hash": 0})
+    if not user:
+        sessions_collection.delete_one({"token": token})
+        raise HTTPException(status_code=401, detail="Invalid session. Please login again")
+
+    return {
+        "email": user.get("email", ""),
+        "name": user.get("name", ""),
+        "role": user.get("role", "user"),
+        "token": token,
+    }
+
+
+def _require_admin(current_user=Depends(_require_user)):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
+try:
+    users_collection.create_index("email", unique=True)
+    profile_settings_collection.create_index("email", unique=True)
+    sessions_collection.create_index("token", unique=True)
+    daily_reports_collection.create_index([("email", 1), ("date", 1)], unique=True)
+    action_board_progress_collection.create_index([("email", 1), ("date", 1)], unique=True)
+except Exception:
+    pass
 
 
 class AddEntryRequest(BaseModel):
@@ -242,6 +338,7 @@ class LoginRequest(BaseModel):
 
 
 class DailyReportRequest(BaseModel):
+    report_date: str = ""
     dsa_topic: str = ""
     dsa_problems_solved: int = 0
     study_hours: float = 0
@@ -254,13 +351,18 @@ class DailyReportRequest(BaseModel):
 
 
 class ProfileSettingsRequest(BaseModel):
-    email: str
     study_start_date: str
     daily_target_hours: float = 2
     dsa_daily_goal: int = 3
     weekly_dsa_target: int = 20
     placement_target_date: str = ""
     weekly_off_day: str = "Sunday"
+
+
+class ActionBoardProgressRequest(BaseModel):
+    report_date: str = ""
+    completed_tasks: int = Field(default=0, ge=0)
+    completed_dsa_tasks: int = Field(default=0, ge=0)
 
 
 def _compute_consecutive_streak(dates: List[date]) -> int:
@@ -282,20 +384,25 @@ def _compute_consecutive_streak(dates: List[date]) -> int:
 
 
 @router.post("/add")
-def add_entry(payload: AddEntryRequest):
+def add_entry(payload: AddEntryRequest, current_user=Depends(_require_user)):
     topic = payload.topic.strip()
     if not topic:
         raise HTTPException(status_code=400, detail="Topic is required")
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    result = entries_collection.insert_one({"date": today, "topic": topic})
+    today = _today_string()
+    result = entries_collection.insert_one({"date": today, "topic": topic, "email": current_user["email"]})
 
     return {"message": "Entry added", "id": str(result.inserted_id)}
 
 
 @router.get("/entries")
-def get_entries():
-    docs = list(entries_collection.find({}, {"topic": 1, "date": 1}).sort("date", -1))
+def get_entries(current_user=Depends(_require_user)):
+    docs = list(
+        entries_collection.find(
+            {"email": current_user["email"]},
+            {"topic": 1, "date": 1},
+        ).sort("date", -1)
+    )
 
     entries = [
         {
@@ -310,15 +417,31 @@ def get_entries():
 
 
 @router.get("/streak")
-def get_streak():
-    docs = list(entries_collection.find({}, {"date": 1}))
-    if not docs:
-        return {"streak": 0}
+def get_streak(current_user=Depends(_require_user)):
+    dates: set[date] = set()
 
-    unique_dates = sorted(
-        {datetime.strptime(doc["date"], "%Y-%m-%d").date() for doc in docs if doc.get("date")},
-        reverse=True,
+    entry_docs = list(entries_collection.find({"email": current_user["email"]}, {"date": 1}))
+    report_docs = list(daily_reports_collection.find({"email": current_user["email"]}, {"date": 1}))
+    action_docs = list(
+        action_board_progress_collection.find(
+            {
+                "email": current_user["email"],
+                "completed_tasks": {"$gt": 0},
+            },
+            {"date": 1},
+        )
     )
+
+    for doc in [*entry_docs, *report_docs, *action_docs]:
+        date_value = doc.get("date")
+        if not isinstance(date_value, str):
+            continue
+        try:
+            dates.add(_parse_iso_date(date_value))
+        except ValueError:
+            continue
+
+    unique_dates = sorted(dates, reverse=True)
 
     if not unique_dates:
         return {"streak": 0}
@@ -450,17 +573,24 @@ def signup(payload: SignupRequest):
     if users_collection.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    password_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        email.encode("utf-8"),
+        120000,
+    ).hex()
+    user_role = "admin" if users_collection.count_documents({}) == 0 else "user"
     users_collection.insert_one(
         {
             "name": name,
             "email": email,
             "password_hash": password_hash,
+            "role": user_role,
             "created_at": datetime.utcnow().isoformat(),
         }
     )
 
-    return {"message": "Signup successful"}
+    return {"message": "Signup successful", "role": user_role}
 
 
 @router.post("/login")
@@ -475,26 +605,74 @@ def login(payload: LoginRequest):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    if user.get("password_hash") != password_hash:
+    pbkdf2_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        email.encode("utf-8"),
+        120000,
+    ).hex()
+    legacy_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    stored_hash = user.get("password_hash", "")
+
+    if stored_hash not in {pbkdf2_hash, legacy_hash}:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if stored_hash == legacy_hash:
+        users_collection.update_one(
+            {"email": email},
+            {"$set": {"password_hash": pbkdf2_hash}},
+        )
+
+    token = _create_session(email)
 
     return {
         "message": "Login successful",
-        "user": {"name": user.get("name", ""), "email": user.get("email", "")},
+        "token": token,
+        "user": {
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "role": user.get("role", "user"),
+        },
+    }
+
+
+@router.post("/logout")
+def logout(current_user=Depends(_require_user)):
+    sessions_collection.delete_one({"token": current_user["token"]})
+    return {"message": "Logged out"}
+
+
+@router.get("/auth/me")
+def auth_me(current_user=Depends(_require_user)):
+    return {
+        "user": {
+            "name": current_user["name"],
+            "email": current_user["email"],
+            "role": current_user.get("role", "user"),
+        }
+    }
+
+
+@router.get("/admin/overview")
+def admin_overview(_admin=Depends(_require_admin)):
+    return {
+        "users": users_collection.count_documents({}),
+        "reports": daily_reports_collection.count_documents({}),
+        "active_sessions": sessions_collection.count_documents({}),
     }
 
 
 @router.post("/daily-report")
-def upsert_daily_report(payload: DailyReportRequest):
+def upsert_daily_report(payload: DailyReportRequest, current_user=Depends(_require_user)):
     if payload.dsa_problems_solved < 0:
         raise HTTPException(status_code=400, detail="Problem count cannot be negative")
     if payload.study_hours < 0:
         raise HTTPException(status_code=400, detail="Study hours cannot be negative")
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    report_date = _normalize_report_date(payload.report_date)
     doc = {
-        "date": today,
+        "date": report_date,
+        "email": current_user["email"],
         "dsa_topic": payload.dsa_topic.strip(),
         "dsa_problems_solved": payload.dsa_problems_solved,
         "study_hours": payload.study_hours,
@@ -507,15 +685,19 @@ def upsert_daily_report(payload: DailyReportRequest):
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    daily_reports_collection.update_one({"date": today}, {"$set": doc}, upsert=True)
-    return {"message": "Daily report saved", "date": today}
+    daily_reports_collection.update_one(
+        {"email": current_user["email"], "date": report_date},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"message": "Daily report saved", "date": report_date}
 
 
 @router.get("/daily-reports")
-def get_daily_reports():
+def get_daily_reports(current_user=Depends(_require_user)):
     docs = list(
         daily_reports_collection.find(
-            {},
+            {"email": current_user["email"]},
             {
                 "date": 1,
                 "dsa_topic": 1,
@@ -550,31 +732,64 @@ def get_daily_reports():
 
 
 @router.delete("/daily-report/{date_value}")
-def delete_daily_report(date_value: str):
-    result = daily_reports_collection.delete_one({"date": date_value})
+def delete_daily_report(date_value: str, current_user=Depends(_require_user)):
+    result = daily_reports_collection.delete_one({"email": current_user["email"], "date": date_value})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Entry not found")
     return {"message": "Entry deleted", "date": date_value}
 
 
 @router.get("/dsa-streak")
-def get_dsa_streak():
-    docs = list(daily_reports_collection.find({"dsa_problems_solved": {"$gt": 0}}, {"date": 1}))
-    dates = [
-        datetime.strptime(doc["date"], "%Y-%m-%d").date()
-        for doc in docs
-        if isinstance(doc.get("date"), str)
-    ]
+def get_dsa_streak(current_user=Depends(_require_user)):
+    report_docs = list(
+        daily_reports_collection.find(
+            {
+                "email": current_user["email"],
+                "dsa_problems_solved": {"$gt": 0},
+            },
+            {"date": 1},
+        )
+    )
+    action_docs = list(
+        action_board_progress_collection.find(
+            {
+                "email": current_user["email"],
+                "completed_dsa_tasks": {"$gt": 0},
+            },
+            {"date": 1},
+        )
+    )
+
+    dates = set()
+    for doc in [*report_docs, *action_docs]:
+        date_value = doc.get("date")
+        if not isinstance(date_value, str):
+            continue
+        try:
+            dates.add(_parse_iso_date(date_value))
+        except ValueError:
+            continue
+
     return {"dsa_streak": _compute_consecutive_streak(dates)}
 
 
 @router.get("/profile-summary")
-def get_profile_summary():
+def get_profile_summary(current_user=Depends(_require_user)):
     reports = list(
-        daily_reports_collection.find({}, {"dsa_problems_solved": 1, "technologies_learned": 1, "study_hours": 1})
+        daily_reports_collection.find(
+            {"email": current_user["email"]},
+            {"dsa_problems_solved": 1, "technologies_learned": 1, "study_hours": 1},
+        )
+    )
+    action_progress = list(
+        action_board_progress_collection.find(
+            {"email": current_user["email"]},
+            {"completed_dsa_tasks": 1},
+        )
     )
     total_days = len(reports)
     total_dsa_problems = sum(int(doc.get("dsa_problems_solved", 0)) for doc in reports)
+    total_dsa_tasks_from_board = sum(int(doc.get("completed_dsa_tasks", 0)) for doc in action_progress)
     total_hours = sum(float(doc.get("study_hours", 0)) for doc in reports)
 
     technologies = []
@@ -589,7 +804,9 @@ def get_profile_summary():
 
     return {
         "total_days_tracked": total_days,
-        "total_dsa_problems": total_dsa_problems,
+        "total_dsa_problems": total_dsa_problems + total_dsa_tasks_from_board,
+        "total_dsa_reported_problems": total_dsa_problems,
+        "total_dsa_action_tasks": total_dsa_tasks_from_board,
         "total_study_hours": round(total_hours, 2),
         "technologies_count": len(unique_tech),
         "technologies": unique_tech,
@@ -597,13 +814,12 @@ def get_profile_summary():
 
 
 @router.post("/profile-settings")
-def save_profile_settings(payload: ProfileSettingsRequest):
-    email = payload.email.strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
+def save_profile_settings(payload: ProfileSettingsRequest, current_user=Depends(_require_user)):
+    if not payload.study_start_date.strip():
+        raise HTTPException(status_code=400, detail="Study start date is required")
 
     settings_doc = {
-        "email": email,
+        "email": current_user["email"],
         "study_start_date": payload.study_start_date.strip(),
         "daily_target_hours": payload.daily_target_hours,
         "dsa_daily_goal": payload.dsa_daily_goal,
@@ -613,15 +829,17 @@ def save_profile_settings(payload: ProfileSettingsRequest):
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    profile_settings_collection.update_one({"email": email}, {"$set": settings_doc}, upsert=True)
+    profile_settings_collection.update_one(
+        {"email": current_user["email"]},
+        {"$set": settings_doc},
+        upsert=True,
+    )
     return {"message": "Profile settings saved"}
 
 
 @router.get("/profile-settings")
-def get_profile_settings(email: str = Query(default="")):
-    normalized_email = email.strip().lower()
-    if not normalized_email:
-        raise HTTPException(status_code=400, detail="Email query parameter is required")
+def get_profile_settings(current_user=Depends(_require_user)):
+    normalized_email = current_user["email"]
 
     doc = profile_settings_collection.find_one(
         {"email": normalized_email},
@@ -656,3 +874,40 @@ def get_profile_settings(email: str = Query(default="")):
         "placement_target_date": doc.get("placement_target_date", ""),
         "weekly_off_day": doc.get("weekly_off_day", "Sunday"),
     }
+
+
+@router.post("/action-board/progress")
+def upsert_action_board_progress(payload: ActionBoardProgressRequest, current_user=Depends(_require_user)):
+    report_date = _normalize_report_date(payload.report_date)
+    doc = {
+        "email": current_user["email"],
+        "date": report_date,
+        "completed_tasks": int(payload.completed_tasks),
+        "completed_dsa_tasks": int(payload.completed_dsa_tasks),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    action_board_progress_collection.update_one(
+        {"email": current_user["email"], "date": report_date},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"message": "Action board progress saved", "date": report_date}
+
+
+@router.get("/action-board/progress")
+def get_action_board_progress(current_user=Depends(_require_user)):
+    docs = list(
+        action_board_progress_collection.find(
+            {"email": current_user["email"]},
+            {"date": 1, "completed_tasks": 1, "completed_dsa_tasks": 1},
+        )
+    )
+    return [
+        {
+            "date": doc.get("date", ""),
+            "completed_tasks": int(doc.get("completed_tasks", 0)),
+            "completed_dsa_tasks": int(doc.get("completed_dsa_tasks", 0)),
+        }
+        for doc in docs
+    ]
